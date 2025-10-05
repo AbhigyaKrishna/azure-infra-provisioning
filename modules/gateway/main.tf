@@ -6,8 +6,7 @@ resource "azurerm_public_ip" "appgw_ip" {
   sku                 = "Standard"
 
   tags = merge(var.common_tags, {
-    Name        = "${var.project_name}-${var.environment}-appgw-pip"
-    Environment = var.environment
+    Name = "${var.project_name}-${var.environment}-appgw-pip"
   })
 }
 
@@ -42,8 +41,7 @@ resource "azurerm_key_vault" "appgw_cert" {
   }
 
   tags = merge(var.common_tags, {
-    Name        = "${var.project_name}-${var.environment}-kv"
-    Environment = var.environment
+    Name = "${var.project_name}-${var.environment}-kv"
   })
 }
 
@@ -197,8 +195,7 @@ resource "azurerm_application_gateway" "main" {
   }
 
   tags = merge(var.common_tags, {
-    Name        = "${var.project_name}-${var.environment}-appgw"
-    Environment = var.environment
+    Name = "${var.project_name}-${var.environment}-appgw"
   })
 
   depends_on = [null_resource.generate_cert, azurerm_public_ip.appgw_ip]

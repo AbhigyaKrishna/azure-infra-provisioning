@@ -5,8 +5,7 @@ resource "azurerm_virtual_network" "main" {
   resource_group_name = var.resource_group_name
 
   tags = merge(var.common_tags, {
-    Name        = "${var.project_name}-${var.environment}-vnet"
-    Environment = var.environment
+    Name = "${var.project_name}-${var.environment}-vnet"
   })
 }
 
@@ -78,8 +77,7 @@ resource "azurerm_network_security_group" "vm_nsg" {
   }
 
   tags = merge(var.common_tags, {
-    Name        = "${var.project_name}-${var.environment}-vm-nsg"
-    Environment = var.environment
+    Name = "${var.project_name}-${var.environment}-vm-nsg"
   })
 }
 
@@ -96,8 +94,7 @@ resource "azurerm_public_ip" "nat" {
   sku                 = "Standard"
 
   tags = merge(var.common_tags, {
-    Name        = "${var.project_name}-${var.environment}-nat-pip"
-    Environment = var.environment
+    Name = "${var.project_name}-${var.environment}-nat-pip"
   })
 }
 
@@ -108,8 +105,7 @@ resource "azurerm_nat_gateway" "main" {
   sku_name            = "Standard"
 
   tags = merge(var.common_tags, {
-    Name        = "${var.project_name}-${var.environment}-nat-gateway"
-    Environment = var.environment
+    Name = "${var.project_name}-${var.environment}-nat-gateway"
   })
 }
 

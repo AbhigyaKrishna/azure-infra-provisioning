@@ -11,12 +11,11 @@ resource "azurerm_network_interface" "vm" {
   }
 
   tags = merge(var.common_tags, {
-    Name        = "${var.project_name}-${var.environment}-nic-${count.index + 1}"
-    Environment = var.environment
+    Name = "${var.project_name}-${var.environment}-nic-${count.index + 1}"
   })
 }
 
-resource "azurerm_linux_virtual_machine" "vm" {
+resource "azurerm_linux_virtual_machine" "main" {
   count               = var.vm_count
   name                = "${var.project_name}-${var.environment}-vm-${count.index + 1}"
   location            = var.location
@@ -45,7 +44,6 @@ resource "azurerm_linux_virtual_machine" "vm" {
   }
 
   tags = merge(var.common_tags, {
-    Name        = "${var.project_name}-${var.environment}-vm-${count.index + 1}"
-    Environment = var.environment
+    Name = "${var.project_name}-${var.environment}-vm-${count.index + 1}"
   })
 }
