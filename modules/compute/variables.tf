@@ -24,17 +24,29 @@ variable "common_tags" {
   default     = {}
 }
 
-variable "address_space" {
-  description = "The address space for the virtual network."
-  type        = list(string)
+variable "vm_count" {
+  description = "The number of virtual machines to create."
+  type        = number
+  default     = 1
 }
 
-variable "private_subnet_cidr" {
-  description = "The CIDR block for the private subnet."
+variable "vm_size" {
+  description = "The size of the virtual machines."
+  type        = string
+  default     = "Standard_Av2"
+}
+
+variable "admin_username" {
+  description = "The admin username for the virtual machines."
   type        = string
 }
 
-variable "public_subnet_cidr" {
-  description = "The CIDR block for the public subnet."
+variable "ssh_public_key" {
+  description = "The SSH public key for the virtual machines."
+  type        = string
+}
+
+variable "subnet_id" {
+  description = "The ID of the subnet where the virtual machines will be deployed."
   type        = string
 }
