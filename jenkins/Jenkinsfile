@@ -1,0 +1,209 @@
+#!/usr/bin/env groovy
+
+pipeline {
+    agent {
+        label 'linux'
+    }
+
+    parameters {
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['dev', 'test', 'prod'],
+            description: 'Target environment'
+        )
+        choice(
+            name: 'ACTION',
+            choices: ['plan', 'apply', 'destroy'],
+            description: 'Terraform action to perform'
+        )
+        booleanParam(
+            name: 'DOCKER_DEPLOY',
+            defaultValue: true,
+            description: 'Deploy with Docker (true) or native Nginx (false)'
+        )
+    }
+
+    environment {
+        TERRAFORM_VERSION = '1.7.5'
+        WORKING_DIR = "environments/${params.ENVIRONMENT}"
+        ARM_CLIENT_ID = credentials('azure-client-id')
+        ARM_CLIENT_SECRET = credentials('azure-client-secret')
+        ARM_SUBSCRIPTION_ID = credentials('azure-subscription-id')
+        ARM_TENANT_ID = credentials('azure-tenant-id')
+    }
+
+    triggers {
+        // Trigger on push to main branch (equivalent to Azure pipeline trigger)
+        pollSCM('H/5 * * * *')  // Poll every 5 minutes for changes
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        timestamps()
+        timeout(time: 1, unit: 'HOURS')
+        disableConcurrentBuilds()
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.GIT_COMMIT_SHORT = sh(
+                        returnStdout: true,
+                        script: "git rev-parse --short HEAD"
+                    ).trim()
+                }
+            }
+        }
+
+        stage('Install Terraform') {
+            steps {
+                script {
+                    sh """
+                        if ! command -v terraform &> /dev/null || [ "\$(terraform version -json | jq -r '.terraform_version')" != "${TERRAFORM_VERSION}" ]; then
+                            echo "Installing Terraform ${TERRAFORM_VERSION}..."
+                            wget -q https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+                            unzip -o terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+                            sudo mv terraform /usr/local/bin/
+                            rm terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+                        fi
+                        terraform version
+                    """
+                }
+            }
+        }
+
+        stage('Terraform Init') {
+            steps {
+                dir(env.WORKING_DIR) {
+                    sh """
+                        terraform init \
+                            -backend-config="storage_account_name=tfstateazureinfra" \
+                            -backend-config="container_name=tfstate" \
+                            -backend-config="key=${params.ENVIRONMENT}.terraform.tfstate" \
+                            -backend-config="resource_group_name=tfstate-rg"
+                    """
+                }
+            }
+        }
+
+        stage('Terraform Validate') {
+            steps {
+                dir(env.WORKING_DIR) {
+                    sh 'terraform validate'
+                }
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                dir(env.WORKING_DIR) {
+                    sh 'terraform plan -out=tfplan'
+                    archiveArtifacts artifacts: 'tfplan', fingerprint: true
+                }
+            }
+        }
+
+        stage('Terraform Apply') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                dir(env.WORKING_DIR) {
+                    input message: 'Apply Terraform changes?', ok: 'Apply'
+                    sh 'terraform apply -auto-approve tfplan'
+                    
+                    script {
+                        // Save outputs for deployment
+                        sh 'terraform output -json > outputs.json'
+                        archiveArtifacts artifacts: 'outputs.json', fingerprint: true
+                        
+                        // Extract IPs for deployment - try from outputs first, then fall back to credentials
+                        try {
+                            env.BASTION_IP = sh(
+                                returnStdout: true,
+                                script: "terraform output -json | jq -r '.bastion_public_ip.value'"
+                            ).trim()
+                            
+                            env.VM_IPS = sh(
+                                returnStdout: true,
+                                script: "terraform output -json | jq -r '.vm_private_ips.value | join(\" \")'"
+                            ).trim()
+                            
+                            echo "Using IPs from Terraform outputs"
+                            echo "Bastion IP: ${env.BASTION_IP}"
+                            echo "VM IPs: ${env.VM_IPS}"
+                        } catch (Exception e) {
+                            echo "Could not retrieve IPs from Terraform outputs: ${e.message}"
+                            echo "Attempting to use credentials for IPs..."
+                            try {
+                                withCredentials([
+                                    string(credentialsId: 'bastion-public-ip', variable: 'BASTION_CRED'),
+                                    string(credentialsId: 'vm-private-ips', variable: 'VM_CRED')
+                                ]) {
+                                    env.BASTION_IP = env.BASTION_CRED
+                                    env.VM_IPS = env.VM_CRED
+                                }
+                                echo "Using IPs from credentials"
+                            } catch (Exception e2) {
+                                error "Could not retrieve IPs from Terraform outputs or credentials: ${e2.message}"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Destroy') {
+            when {
+                expression { params.ACTION == 'destroy' }
+            }
+            steps {
+                dir(env.WORKING_DIR) {
+                    input message: 'Destroy infrastructure?', ok: 'Destroy'
+                    sh 'terraform destroy -auto-approve'
+                }
+            }
+        }
+
+        stage('Deploy Application') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                script {
+                    if (params.DOCKER_DEPLOY) {
+                        build job: 'deploy-docker',
+                            parameters: [
+                                string(name: 'ENVIRONMENT', value: params.ENVIRONMENT),
+                                string(name: 'BASTION_IP', value: env.BASTION_IP),
+                                string(name: 'VM_IPS', value: env.VM_IPS)
+                            ],
+                            wait: true
+                    } else {
+                        build job: 'deploy-app',
+                            parameters: [
+                                string(name: 'ENVIRONMENT', value: params.ENVIRONMENT),
+                                string(name: 'BASTION_IP', value: env.BASTION_IP),
+                                string(name: 'VM_IPS', value: env.VM_IPS)
+                            ],
+                            wait: true
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Pipeline completed successfully!"
+        }
+        failure {
+            echo "Pipeline failed!"
+        }
+        always {
+            cleanWs()
+        }
+    }
+}

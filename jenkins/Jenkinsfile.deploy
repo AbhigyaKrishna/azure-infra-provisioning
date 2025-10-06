@@ -1,0 +1,199 @@
+#!/usr/bin/env groovy
+
+pipeline {
+    agent {
+        label 'linux'
+    }
+
+    parameters {
+        string(
+            name: 'ENVIRONMENT',
+            defaultValue: 'dev',
+            description: 'Target environment'
+        )
+        string(
+            name: 'BASTION_IP',
+            defaultValue: '',
+            description: 'Bastion host IP address'
+        )
+        string(
+            name: 'VM_IPS',
+            defaultValue: '',
+            description: 'Space-separated list of VM private IPs'
+        )
+    }
+
+    environment {
+        ADMIN_USER = 'azureuser'
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+    }
+
+    stages {
+        stage('Validate Parameters') {
+            steps {
+                script {
+                    if (!params.BASTION_IP || params.BASTION_IP.isEmpty()) {
+                        error "BASTION_IP parameter is required"
+                    }
+                    if (!params.VM_IPS || params.VM_IPS.isEmpty()) {
+                        error "VM_IPS parameter is required"
+                    }
+                    echo "Deployment parameters validated successfully"
+                    echo "Bastion IP: ${params.BASTION_IP}"
+                    echo "VM IPs: ${params.VM_IPS}"
+                }
+            }
+        }
+        
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Build Application Package') {
+            steps {
+                dir('app') {
+                    sh """
+                        tar -czf ${WORKSPACE}/app.tar.gz \
+                            index.html \
+                            nginx.conf \
+                            generate-ssl.sh
+                    """
+                }
+                archiveArtifacts artifacts: 'app.tar.gz', fingerprint: true
+            }
+        }
+
+        stage('Deploy to VMs') {
+            steps {
+                script {
+                    // Setup SSH
+                    sh """
+                        mkdir -p ~/.ssh
+                        chmod 700 ~/.ssh
+                        ssh-keyscan -H ${params.BASTION_IP} >> ~/.ssh/known_hosts 2>/dev/null || true
+                    """
+
+                    // Copy application package to bastion
+                    sshagent(credentials: ['azure-ssh-key']) {
+                        sh """
+                            scp -o StrictHostKeyChecking=no \
+                                ${WORKSPACE}/app.tar.gz \
+                                \${ADMIN_USER}@${params.BASTION_IP}:/tmp/
+                        """
+                    }
+
+                    // Create deployment script
+                    writeFile file: 'deploy-to-vm.sh', text: '''#!/bin/bash
+set -e
+
+VM_IP=$1
+ADMIN_USER=$2
+
+echo "Deploying to VM: $VM_IP"
+
+# Transfer files to target VM
+scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \\
+    /tmp/app.tar.gz ${ADMIN_USER}@${VM_IP}:/tmp/
+
+# Execute deployment on VM
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \\
+    ${ADMIN_USER}@${VM_IP} 'bash -s' <<'DEPLOY_SCRIPT'
+set -e
+
+if ! command -v nginx &> /dev/null; then
+    echo "Installing Nginx..."
+    sudo apt-get update
+    sudo apt-get install -y nginx
+fi
+
+echo "Stopping Nginx..."
+sudo systemctl stop nginx || true
+
+echo "Extracting application files..."
+sudo rm -rf /var/www/html/*
+sudo tar -xzf /tmp/app.tar.gz -C /tmp/
+
+echo "Copying HTML files..."
+sudo cp /tmp/index.html /var/www/html/
+
+if [ ! -f /etc/ssl/certs/ssl.crt ] || [ ! -f /etc/ssl/private/ssl.key ]; then
+    echo "Generating self-signed SSL certificates..."
+    sudo mkdir -p /etc/ssl/certs /etc/ssl/private
+    sudo chmod +x /tmp/generate-ssl.sh
+    sudo /tmp/generate-ssl.sh /etc/ssl
+fi
+
+sudo cp /tmp/nginx.conf /etc/nginx/nginx.conf
+
+echo "Testing Nginx configuration..."
+sudo nginx -t
+
+echo "Starting Nginx..."
+sudo systemctl enable nginx
+sudo systemctl start nginx
+
+echo "Verifying deployment..."
+sleep 3
+sudo systemctl status nginx --no-pager
+
+echo "Deployment completed successfully on $(hostname)"
+DEPLOY_SCRIPT
+
+echo "Deployment to $VM_IP completed"
+'''
+
+                    // Copy deployment script to bastion
+                    sh "chmod +x deploy-to-vm.sh"
+                    sshagent(credentials: ['azure-ssh-key']) {
+                        sh """
+                            scp -o StrictHostKeyChecking=no \
+                                deploy-to-vm.sh \
+                                \${ADMIN_USER}@${params.BASTION_IP}:/tmp/
+                        """
+                    }
+
+                    // Execute deployment on all VMs
+                    sshagent(credentials: ['azure-ssh-key']) {
+                        sh """
+                            ssh -o StrictHostKeyChecking=no \
+                                \${ADMIN_USER}@${params.BASTION_IP} 'bash -s' <<'EOF'
+set -e
+chmod +x /tmp/deploy-to-vm.sh
+
+for VM_IP in ${params.VM_IPS}; do
+    echo "================================"
+    echo "Deploying to VM: \$VM_IP"
+    echo "================================"
+    /tmp/deploy-to-vm.sh \$VM_IP ${ADMIN_USER}
+done
+
+echo "================================"
+echo "All deployments completed!"
+echo "================================"
+EOF
+                        """
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Deployment completed successfully!"
+        }
+        failure {
+            echo "Deployment failed!"
+        }
+        always {
+            cleanWs()
+        }
+    }
+}
