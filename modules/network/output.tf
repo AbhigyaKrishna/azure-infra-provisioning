@@ -32,8 +32,3 @@ output "nat_public_ip" {
   description = "The Public IP address of the NAT Gateway"
   value       = azurerm_public_ip.nat.ip_address
 }
-
-output "bastion_subnet_id" {
-  description = "The ID of the bastion subnet"
-  value       = length(azurerm_subnet.bastion) > 0 ? azurerm_subnet.bastion[0].id : null
-}

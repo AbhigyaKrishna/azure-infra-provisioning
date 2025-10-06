@@ -38,9 +38,3 @@ variable "public_subnet_cidr" {
   description = "The CIDR block for the public subnet."
   type        = string
 }
-
-variable "bastion_subnet_cidr" {
-  description = "The CIDR block for the bastion subnet."
-  type        = string
-  default     = ""
-}

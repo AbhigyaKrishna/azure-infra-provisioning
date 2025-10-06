@@ -5,9 +5,10 @@ locals {
     Environment = local.environment
   })
 
-  admin_username = "azureuser"
-  vm_count = 3
-  vm_size  = "Standard_Av2"
+  admin_username  = "azureuser"
+  vm_count        = 3
+  vm_size         = "Standard_Av2"
+  bastion_vm_size = "Standard_B1s"
 
   ssh_key = file(var.ssh_key_file_path)
 }

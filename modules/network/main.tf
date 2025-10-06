@@ -23,14 +23,6 @@ resource "azurerm_subnet" "public" {
   address_prefixes     = [var.public_subnet_cidr]
 }
 
-resource "azurerm_subnet" "bastion" {
-  count                = var.bastion_subnet_cidr != "" ? 1 : 0
-  name                 = "${var.project_name}-${var.environment}-bastion-subnet"
-  resource_group_name  = var.resource_group_name
-  virtual_network_name = azurerm_virtual_network.main.name
-  address_prefixes     = [var.bastion_subnet_cidr]
-}
-
 resource "azurerm_network_security_group" "vm_nsg" {
   name                = "${var.project_name}-${var.environment}-private-nsg"
   location            = var.location
@@ -44,7 +36,7 @@ resource "azurerm_network_security_group" "vm_nsg" {
     protocol                   = "Tcp"
     source_port_range          = "*"
     destination_port_range     = "22"
-    source_address_prefix      = var.bastion_subnet_cidr != "" ? var.bastion_subnet_cidr : "VirtualNetwork"
+    source_address_prefix      = var.public_subnet_cidr
     destination_address_prefix = "*"
   }
 
