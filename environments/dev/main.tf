@@ -17,6 +17,7 @@ module "network" {
   address_space       = var.address_space
   private_subnet_cidr = var.private_subnet_cidr
   public_subnet_cidr  = var.public_subnet_cidr
+  bastion_subnet_cidr = var.bastion_subnet_cidr
 }
 
 module "compute" {
@@ -42,4 +43,18 @@ module "gateway" {
   common_tags         = local.common_tags
   subnet_id           = module.network.public_subnet_id
   backend_ips         = module.compute.vm_private_ips
+}
+
+module "bastion" {
+  source              = "../../modules/bastion"
+  project_name        = var.project_name
+  environment         = local.environment
+  location            = var.location
+  resource_group_name = azurerm_resource_group.main.name
+  common_tags         = local.common_tags
+  subnet_id           = module.network.bastion_subnet_id
+  vm_size             = "Standard_B1s"
+  admin_username      = local.admin_username
+  ssh_public_key      = local.ssh_key
+  allowed_ssh_cidr    = var.allowed_ssh_cidr
 }

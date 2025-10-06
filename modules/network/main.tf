@@ -23,20 +23,28 @@ resource "azurerm_subnet" "public" {
   address_prefixes     = [var.public_subnet_cidr]
 }
 
+resource "azurerm_subnet" "bastion" {
+  count                = var.bastion_subnet_cidr != "" ? 1 : 0
+  name                 = "${var.project_name}-${var.environment}-bastion-subnet"
+  resource_group_name  = var.resource_group_name
+  virtual_network_name = azurerm_virtual_network.main.name
+  address_prefixes     = [var.bastion_subnet_cidr]
+}
+
 resource "azurerm_network_security_group" "vm_nsg" {
-  name                = "${var.project_name}-${var.environment}-public-nsg"
+  name                = "${var.project_name}-${var.environment}-private-nsg"
   location            = var.location
   resource_group_name = var.resource_group_name
 
   security_rule {
-    name                       = "Allow-SSH"
+    name                       = "Allow-SSH-From-Bastion"
     priority                   = 100
     direction                  = "Inbound"
     access                     = "Allow"
     protocol                   = "Tcp"
     source_port_range          = "*"
     destination_port_range     = "22"
-    source_address_prefix      = "VirtualNetwork"
+    source_address_prefix      = var.bastion_subnet_cidr != "" ? var.bastion_subnet_cidr : "VirtualNetwork"
     destination_address_prefix = "*"
   }
 
@@ -65,6 +73,18 @@ resource "azurerm_network_security_group" "vm_nsg" {
   }
 
   security_rule {
+    name                       = "Deny-SSH-From-Internet"
+    priority                   = 200
+    direction                  = "Inbound"
+    access                     = "Deny"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "22"
+    source_address_prefix      = "Internet"
+    destination_address_prefix = "*"
+  }
+
+  security_rule {
     name                       = "AllowOutbound"
     priority                   = 100
     direction                  = "Outbound"
@@ -77,7 +97,7 @@ resource "azurerm_network_security_group" "vm_nsg" {
   }
 
   tags = merge(var.common_tags, {
-    Name = "${var.project_name}-${var.environment}-vm-nsg"
+    Name = "${var.project_name}-${var.environment}-private-vm-nsg"
   })
 }
 

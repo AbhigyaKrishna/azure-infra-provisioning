@@ -33,3 +33,15 @@ variable "ssh_key_file_path" {
   description = "The SSH public key for the virtual machines."
   type        = string
 }
+
+variable "bastion_subnet_cidr" {
+  description = "The CIDR block for the bastion subnet."
+  type        = string
+  default     = ""
+}
+
+variable "allowed_ssh_cidr" {
+  description = "The CIDR block allowed to SSH into the bastion host."
+  type        = string
+  default     = "*"
+}
