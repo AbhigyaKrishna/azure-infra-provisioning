@@ -81,11 +81,6 @@ output "bastion_private_ip" {
   value       = module.bastion.bastion_private_ip
 }
 
-output "bastion_ssh_command" {
-  description = "SSH command to connect to bastion host"
-  value       = "ssh ${local.admin_username}@${module.bastion.bastion_public_ip}"
-}
-
 output "deployment_info" {
   description = "Deployment information"
   value = {

@@ -1,0 +1,100 @@
+trigger: none
+
+parameters:
+  - name: environment
+    type: string
+    default: "dev"
+    values:
+      - dev
+      - prod
+      - test
+
+pool:
+  vmImage: ubuntu-latest
+
+stages:
+  - stage: build
+    jobs:
+      - job: buildApp
+        steps:
+          - checkout: self
+
+          - task: ArchiveFiles@2
+            displayName: "Archive application files"
+            inputs:
+              rootFolderOrFile: "$(Build.SourcesDirectory)/app"
+              includeRootFolder: false
+              archiveType: "tar"
+              tarCompression: "gz"
+              archiveFile: "$(Build.ArtifactStagingDirectory)/app.tar.gz"
+              replaceExistingArchive: true
+
+          - task: PublishPipelineArtifact@1
+            displayName: "Publish Application Artifact"
+            inputs:
+              targetPath: "$(Build.ArtifactStagingDirectory)/app.tar.gz"
+              artifact: "app-package"
+              publishLocation: "pipeline"
+
+  - stage: deploy
+    dependsOn: build
+    condition: succeeded()
+    jobs:
+      - deployment: deployApp
+        environment: "AppEnv-${{ parameters.environment }}"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - download: current
+                  artifact: app-package
+
+                - template: templates/deploy-via-ssh.yml
+                  parameters:
+                    environment: "${{ parameters.environment }}"
+                    adminUsername: "azureuser"
+                    artifactsToTransfer:
+                      - name: "app.tar.gz"
+                        source: "app-package"
+                    deploymentScript: |
+                      set -e
+
+                      if ! command -v nginx &> /dev/null; then
+                          echo "Installing Nginx..."
+                          sudo apt-get update
+                          sudo apt-get install -y nginx
+                      fi
+
+                      echo "Stopping Nginx..."
+                      sudo systemctl stop nginx || true
+
+                      echo "Extracting application files..."
+                      sudo rm -rf /var/www/html/*
+                      sudo tar -xzf /tmp/app.tar.gz -C /tmp/
+
+                      echo "Copying HTML files..."
+                      sudo cp /tmp/index.html /var/www/html/
+
+                      if [ ! -f /etc/ssl/certs/ssl.crt ] || [ ! -f /etc/ssl/private/ssl.key ]; then
+                          echo "Generating self-signed SSL certificates..."
+                          sudo mkdir -p /etc/ssl/certs /etc/ssl/private
+                          sudo chmod +x /tmp/generate-ssl.sh
+                          sudo /tmp/generate-ssl.sh /etc/ssl
+                      fi
+
+                      sudo cp /tmp/nginx.conf /etc/nginx/nginx.conf
+
+                      echo "Testing Nginx configuration..."
+                      sudo nginx -t
+
+                      echo "Starting Nginx..."
+                      sudo systemctl enable nginx
+                      sudo systemctl start nginx
+
+                      echo "Verifying deployment..."
+                      sleep 3
+                      sudo systemctl status nginx --no-pager
+
+                      echo "Deployment completed successfully on $(hostname)"

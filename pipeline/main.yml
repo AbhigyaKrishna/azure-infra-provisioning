@@ -1,0 +1,192 @@
+trigger:
+  batch: "true"
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      - .vscode/*
+      - .gitignore
+      - README.md
+
+parameters:
+  - name: environment
+    type: string
+    default: "dev"
+    values:
+      - dev
+      - prod
+      - test
+
+  - name: action
+    type: string
+    default: "plan"
+    values:
+      - plan
+      - apply
+      - destroy
+
+  - name: dockerDeploy
+    type: boolean
+    default: true
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  - name: terraformVersion
+    value: "1.7.5"
+  - name: workingDir
+    value: "${System.DefaultWorkingDirectory}/environments/${{ parameters.environment }}"
+
+name: "$(GitVersion.FullSemVer)"
+
+stages:
+  - stage: validate
+    jobs:
+      - template: templates/setup-tf.yml
+        parameters:
+          environment: "${{ parameters.environment }}"
+          version: "$(terraformVersion)"
+          workingDir: "$(workingDir)"
+
+      - job: validate
+        dependsOn: install
+        steps:
+          - task: TerraformTaskV4@4
+            displayName: "Terraform Validate"
+            inputs:
+              provider: "azurerm"
+              command: "validate"
+              workingDirectory: "$(workingDir)"
+
+  - stage: plan
+    dependsOn: validate
+    condition: succeeded()
+    jobs:
+      - template: templates/setup-tf.yml
+        parameters:
+          environment: "${{ parameters.environment }}"
+          version: "$(terraformVersion)"
+          workingDir: "$(workingDir)"
+
+      - job: plan
+        steps:
+          - task: TerraformTaskV4@4
+            displayName: "Terraform Plan"
+            inputs:
+              provider: "azurerm"
+              command: "plan"
+              workingDirectory: "$(workingDir)"
+              environmentServiceNameAzureRM: "Azure-ServiceConnection"
+
+          - task: PublishPipelineArtifact@1
+            displayName: "Publish Terraform Plan"
+            inputs:
+              targetPath: "$(workingDir)/tfplan"
+              artifact: "tfplan-${{ parameters.environment }}"
+              publishLocation: "pipeline"
+
+  - stage: apply
+    dependsOn: plan
+    condition: and(succeeded(), eq('${{ parameters.action }}', 'apply'))
+    jobs:
+      - deployment: apply
+        environment: "${{ parameters.environment }}"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: DownloadPipelineArtifact@2
+                  displayName: "Download Terraform Plan"
+                  inputs:
+                    buildType: "current"
+                    artifact: "tfplan-${{ parameters.environment }}"
+                    targetPath: "$(Pipeline.Workspace)"
+
+                - template: templates/setup-tf.yml
+                  parameters:
+                    environment: "${{ parameters.environment }}"
+                    version: "$(terraformVersion)"
+                    workingDir: "$(workingDir)"
+
+                - checkout: self
+
+                - task: TerraformTaskV4@4
+                  displayName: "Terraform Apply"
+                  inputs:
+                    provider: "azurerm"
+                    command: "apply"
+                    commandOptions: "-auto-approve $(Pipeline.Workspace)/tfplan-${{ parameters.environment }}"
+                    workingDirectory: "$(workingDir)"
+                    environmentServiceNameAzureRM: "Azure-ServiceConnection"
+
+                - task: TerraformTaskV4@4
+                  displayName: "Terraform Output"
+                  inputs:
+                    provider: "azurerm"
+                    command: "output"
+                    commandOptions: "-json"
+                    workingDirectory: "$(workingDir)"
+                    environmentServiceNameAzureRM: "Azure-ServiceConnection"
+
+                - task: PublishPipelineArtifact@1
+                  displayName: "Publish Terraform Outputs"
+                  inputs:
+                    targetPath: "$(workingDir)/outputs"
+                    artifact: "outputs-${{ parameters.environment }}"
+                    publishLocation: "pipeline"
+
+  - stage: destroy
+    dependsOn: plan
+    condition: and(succeeded(), eq('${{ parameters.action }}', 'destroy'))
+    jobs:
+      - deployment: destroy
+        environment: "${{ parameters.environment }}-destroy"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - template: templates/setup-tf.yml
+                  parameters:
+                    environment: "${{ parameters.environment }}"
+                    version: "$(terraformVersion)"
+                    workingDir: "$(workingDir)"
+
+                - checkout: self
+
+                - task: TerraformTaskV4@4
+                  displayName: "Terraform Destroy"
+                  inputs:
+                    provider: "azurerm"
+                    command: "destroy"
+                    commandOptions: "-auto-approve"
+                    workingDirectory: "$(workingDir)"
+                    environmentServiceNameAzureRM: "Azure-ServiceConnection"
+
+  - stage: deployApp
+    dependsOn: apply
+    condition: and(succeeded(), eq('${{ parameters.action }}', 'apply'), eq('${{ parameters.dockerDeploy }}', false))
+    jobs:
+      - job: triggerAppDeployment
+        steps:
+          - task: TriggerPipeline@1
+            displayName: "Trigger Non-Docker Deployment"
+            inputs:
+              serviceConnection: "Azure DevOps"
+              project: "$(System.TeamProject)"
+              pipeline: "deploy.yml"
+              buildParameters: "environment: ${{ parameters.environment }}"
+
+  - stage: deployDockerApp
+    dependsOn: apply
+    condition: and(succeeded(), eq('${{ parameters.action }}', 'apply'), eq('${{ parameters.dockerDeploy }}', true))
+    jobs:
+      - job: triggerDockerDeployment
+        steps:
+          - task: TriggerPipeline@1
+            inputs:
+              serviceConnection: "Azure DevOps"
+              project: "$(System.TeamProject)"
+              pipeline: "deploy-docker.yml"
+              buildParameters: "environment: ${{ parameters.environment }}"

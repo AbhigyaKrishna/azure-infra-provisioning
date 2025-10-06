@@ -1,0 +1,99 @@
+trigger: none
+
+parameters:
+  - name: environment
+    type: string
+    default: "dev"
+    values:
+      - dev
+      - prod
+      - test
+
+pool:
+  vmImage: ubuntu-latest
+
+stages:
+  - stage: build
+    jobs:
+      - job: buildDocker
+        steps:
+          - checkout: self
+
+          - task: DockerInstaller@0
+            displayName: "Install Docker"
+            inputs:
+              dockerVersion: "latest"
+
+          - script: |
+              cd $(Build.SourcesDirectory)/app
+              docker build -t nginx-app-${{ parameters.environment }}:$(Build.BuildId) .
+              docker tag nginx-app-${{ parameters.environment }}:$(Build.BuildId) nginx-app:latest
+            displayName: "Build Docker Image"
+
+          - script: |
+              docker save nginx-app-${{ parameters.environment }}:$(Build.BuildId) -o $(Build.ArtifactStagingDirectory)/nginx-app.tar
+            displayName: "Save Docker Image"
+
+          - task: PublishPipelineArtifact@1
+            displayName: "Publish Docker Image Artifact"
+            inputs:
+              targetPath: "$(Build.ArtifactStagingDirectory)/nginx-app.tar"
+              artifact: "docker-image"
+              publishLocation: "pipeline"
+
+  - stage: deploy
+    dependsOn: build
+    condition: succeeded()
+    jobs:
+      - deployment: deployDockerApp
+        environment: "DockerAppEnv-${{ parameters.environment }}"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - download: current
+                  artifact: docker-image
+
+                - template: templates/deploy-via-ssh.yml
+                  parameters:
+                    environment: "${{ parameters.environment }}"
+                    adminUsername: "azureuser"
+                    artifactsToTransfer:
+                      - name: "nginx-app.tar"
+                        source: "docker-image"
+                    filesToTransfer:
+                      - source: "$(Build.SourcesDirectory)/app"
+                        destination: "app"
+                    deploymentScript: |
+                      set -e
+
+                      if ! command -v docker &> /dev/null; then
+                          echo "Installing Docker..."
+                          curl -fsSL https://get.docker.com -o get-docker.sh
+                          sudo sh get-docker.sh
+                          sudo usermod -aG docker $USER
+                          sudo systemctl enable docker
+                          sudo systemctl start docker
+                      fi
+
+                      if ! command -v docker-compose &> /dev/null; then
+                          echo "Installing Docker Compose..."
+                          sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+                          sudo chmod +x /usr/local/bin/docker-compose
+                      fi
+
+                      echo "Loading Docker image..."
+                      sudo docker load -i /tmp/nginx-app.tar
+
+                      echo "Deploying with Docker Compose..."
+                      cd /tmp/app
+                      sudo docker-compose down || true
+                      sudo docker-compose up -d
+
+                      echo "Verifying deployment..."
+                      sleep 5
+                      sudo docker ps
+
+                      echo "Deployment completed successfully on $(hostname)"

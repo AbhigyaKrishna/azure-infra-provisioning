@@ -1,0 +1,107 @@
+parameters:
+  - name: environment
+    type: string
+  - name: artifactsToTransfer
+    type: object
+    default: []
+  - name: adminUsername
+    type: string
+    default: "azureuser"
+  - name: filesToTransfer
+    type: object
+    default: []
+  - name: deploymentScript
+    type: string
+    default: ""
+
+steps:
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      buildType: "specific"
+      project: "$(System.TeamProject)"
+      definition: "$(System.DefinitionId)"
+      buildVersionToDownload: "latest"
+      artifactName: "outputs-${{ parameters.environment }}"
+      targetPath: "$(Pipeline.Workspace)/tf-outputs"
+    continueOnError: true
+
+  - task: InstallSSHKey@0
+    displayName: "Install SSH Key"
+    inputs:
+      knownHostsEntry: "$(KNOWN_HOSTS)"
+      sshPublicKey: "$(SSH_PUBLIC_KEY)"
+      sshKeySecureFile: "azure-ssh-key"
+
+  - bash: |
+      set -e
+
+      if [ -f "$(Pipeline.Workspace)/tf-outputs/outputs" ]; then
+        BASTION_IP=$(jq -r '.bastion_public_ip.value' $(Pipeline.Workspace)/tf-outputs/outputs)
+        VM_PRIVATE_IPS=$(jq -r '.vm_private_ips.value[]' $(Pipeline.Workspace)/tf-outputs/outputs)
+      else
+        echo "Using environment variables for IPs"
+        BASTION_IP="${BASTION_PUBLIC_IP}"
+        VM_PRIVATE_IPS="${VM_PRIVATE_IPS}"
+      fi
+
+      ADMIN_USER="${{ parameters.adminUsername }}"
+
+      echo "Bastion IP: $BASTION_IP"
+      echo "VM Private IPs: $VM_PRIVATE_IPS"
+
+      SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+      ${{ each artifact in parameters.artifactsToTransfer }}:
+      echo "Copying artifact ${{ artifact.name }} to bastion..."
+      ARTIFACT_PATH="$(Pipeline.Workspace)/${{ artifact.source }}/${{ artifact.name }}"
+      scp $SSH_OPTS "$ARTIFACT_PATH" ${ADMIN_USER}@${BASTION_IP}:/tmp/${{ artifact.name }}
+      ${{ end }}
+
+      ${{ each file in parameters.filesToTransfer }}:
+      echo "Copying ${{ file.source }} to bastion..."
+      scp $SSH_OPTS -r ${{ file.source }} ${ADMIN_USER}@${BASTION_IP}:/tmp/${{ file.destination }}
+      ${{ end }}
+
+      cat > /tmp/deploy-to-vm.sh <<'EOF'
+      #!/bin/bash
+      VM_IP=$1
+      ADMIN_USER=$2
+
+      echo "Deploying to VM: $VM_IP"
+
+      echo "Transferring files to target VM..."
+      scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+          -r /tmp/* ${ADMIN_USER}@${VM_IP}:/tmp/
+
+      ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+          ${ADMIN_USER}@${VM_IP} 'bash -s' <<'DEPLOY_SCRIPT'
+${{ parameters.deploymentScript }}
+      DEPLOY_SCRIPT
+
+      echo "Deployment to $VM_IP completed"
+      EOF
+
+      chmod +x /tmp/deploy-to-vm.sh
+
+      scp $SSH_OPTS /tmp/deploy-to-vm.sh ${ADMIN_USER}@${BASTION_IP}:/tmp/
+
+      ssh $SSH_OPTS ${ADMIN_USER}@${BASTION_IP} "bash -s" <<EOF2
+      set -e
+      chmod +x /tmp/deploy-to-vm.sh
+
+      for VM_IP in $VM_PRIVATE_IPS; do
+          echo "================================"
+          echo "Deploying to VM: \$VM_IP"
+          echo "================================"
+          /tmp/deploy-to-vm.sh \$VM_IP $ADMIN_USER
+      done
+
+      echo "================================"
+      echo "All deployments completed!"
+      echo "================================"
+      EOF2
+
+    displayName: "Deploy to VMs via Bastion"
+    env:
+      BASTION_PUBLIC_IP: $(BASTION_PUBLIC_IP)
+      VM_PRIVATE_IPS: $(VM_PRIVATE_IPS)

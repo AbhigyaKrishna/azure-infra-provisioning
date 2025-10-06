@@ -1,0 +1,37 @@
+parameters:
+  - name: environment
+    type: string
+  - name: version
+    type: string
+  - name: workingDir
+    type: string
+    default: "${System.DefaultWorkingDirectory}"
+
+jobs:
+  - job: install
+    steps:
+      - checkout: self
+
+      - task: TerraformInstaller@0
+        displayName: "Install Terraform"
+        inputs:
+          terraformVersion: "${{ parameters.version }}"
+
+      - task: TerraformTaskV4@4
+        displayName: "Terraform Init"
+        inputs:
+          provider: "azurerm"
+          command: "init"
+          workingDirectory: "${{ parameters.workingDir }}"
+          backendServiceArm: "AzureServiceConnection"
+          backendAzureRmResourceGroupName: "tfstate-rg"
+          backendAzureRmStorageAccountName: "tfstateazureinfra"
+          backendAzureRmContainerName: "tfstate"
+          backendAzureRmKey: "${{ parameters.environment }}.terraform.tfstate"
+
+      - task: TerraformTaskV4@4
+        displayName: "Terraform Validate"
+        inputs:
+          provider: "azurerm"
+          command: "validate"
+          workingDirectory: "${{ parameters.workingDir }}"
